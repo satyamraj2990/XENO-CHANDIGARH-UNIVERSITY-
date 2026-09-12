@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
 data/processed/*.db
-data/comm_log.db
 .env
 .env.*
 !.env.example
