@@ -1,24 +1,20 @@
 # Comm-Log Target Base Reconciliation
 
-**SQLite-based reconciliation of merchant communication logs for the October 2026 Diwali campaign.**
+**SQLite + SQL reconciliation of merchant communication logs to determine the Finance-reportable `target_base`.**
 
-This repository contains a reproducible, source-controlled version of the reconciliation workflow. The raw CSV files are loaded into a local SQLite database, then SQL business rules calculate the Finance-reportable `target_base`.
-
-This project reconciles **30 raw communication-log records** against the Finance-reported `target_base` by applying campaign eligibility, processing, delivery, and retry-deduplication rules.
+This project investigates **30 raw communication-log records** for **Merchant 501's October 2026 Diwali campaigns** and reconciles them to the Finance-reported target base.
 
 > **Final `target_base`: 22**
 
 ---
 
-## 📌 Problem Statement
+## Problem Statement
 
-Merchant **501** has communication logs associated with its **Diwali campaigns** during **October 2026**.
+Finance reports a `target_base` of **22**, while the raw communication logs contain **30 records**.
 
-The raw communication log contains **30 records**, but Finance reports a `target_base` of **22**.
+The objective is to determine **why 30 ≠ 22** and build a reproducible SQL-based reconciliation that correctly handles:
 
-The goal of this project is to determine **exactly how the raw count of 30 is reconciled to the final Finance-reportable count of 22**, while correctly handling:
-
-* Campaign lifecycle states
+* Campaign eligibility
 * Processing status
 * Delivery status
 * Retry campaigns
@@ -26,228 +22,286 @@ The goal of this project is to determine **exactly how the raw count of 30 is re
 * Customer deduplication
 * Repeated events in standalone campaigns
 
+The important question was not simply:
 
-## 🎯 Final Result
+```sql
+SELECT COUNT(*)
+```
 
-| Metric                 |  Count |
-| ---------------------- | -----: |
-| Raw communication logs |     30 |
-| Finance `target_base`  | **22** |
+but rather:
 
-### Reconciliation Bridge
-
-|      Step | Description               | Result | Reason                                     |
-| --------: | ------------------------- | -----: | ------------------------------------------ |
-|         0 | Naive count               | **30** | Starting point: all raw communication logs |
-|         1 | Merchant & October filter | **30** | Scope to merchant `501` and October 2026   |
-|         2 | Diwali campaign filter    | **30** | Keep campaigns matching `%Diwali%`         |
-|         3 | Processing status         | **26** | Exclude campaigns awaiting approval        |
-|         4 | Delivery status `900`     | **22** | Exclude failed/non-qualifying deliveries   |
-|         5 | Retry deduplication       | **22** | Count retry customers once                 |
-| **Final** | **Finance `target_base`** | **22** | **Final reportable target count**          |
-
-
-## 📐 Business Rules
-
-The reconciliation follows these rules:
-
-1. **Merchant Scope**
-
-   * Only merchant `501` is considered.
-
-2. **Date Scope**
-
-   * Only communication logs sent during **October 2026** are considered.
-   * Date range:
-
-     ```text
-     2026-10-01 ≤ sent_time < 2026-11-01
-     ```
-
-3. **Campaign Scope**
-
-   * Only campaigns whose names contain `Diwali` are included.
-   * Matching rule:
-
-     ```sql
-     name LIKE '%Diwali%'
-     ```
-
-4. **Campaign Eligibility**
-
-   * Campaigns must have:
-
-     ```text
-     creation_status IN
-     ('approved', 'aborted', 'resumed', 'stopped')
-     ```
-   * Campaigns must have:
-
-     ```text
-     processing_status = 'processed'
-     ```
-
-5. **Communication Type**
-
-   * Only campaign communications with:
-
-     ```text
-     communication_type = 2
-     ```
-
-     are included.
-
-6. **Delivery Status**
-
-   * Only successfully delivered communications are included:
-
-     ```text
-     delivery_status = 900
-     ```
-
-7. **Retry Deduplication**
-
-   * Retry campaigns form parent-child relationships.
-   * Customers appearing across the same retry family are counted **once**.
-
-8. **Standalone Campaigns**
-
-   * Repeated communication events are preserved for standalone campaigns.
-   * Therefore, standalone campaigns use event-level counting rather than customer-level deduplication.
+> **Which communication records are actually eligible for Finance reporting, and how should retry records be counted?**
 
 ---
 
-## 🔍 Key Insight
+# Final Reconciliation
 
-The most important part of the reconciliation is the handling of **retry campaigns**.
+| Step                 | Rule Applied                                |  Count | Impact               |
+| -------------------- | ------------------------------------------- | -----: | -------------------- |
+| Raw logs             | Starting dataset                            | **30** | Baseline             |
+| Merchant + October   | Merchant `501`, October 2026                | **30** | No change            |
+| Diwali campaigns     | `name LIKE '%Diwali%'`                      | **30** | No change            |
+| Campaign eligibility | Approved/valid + processed                  | **26** | 4 excluded           |
+| Successful delivery  | `delivery_status = 900`                     | **22** | 4 excluded           |
+| Retry deduplication  | Deduplicate customers within retry families | **22** | No further reduction |
 
-A retry campaign is linked to its original campaign through the `parent_id` relationship:
+### Final Answer
 
 ```text
-Root Campaign
-     │
-     ├── Retry Campaign 1
-     │       │
-     │       └── Retry Campaign 2
-     │
-     └── Retry Campaign 3
+Finance target_base = 22
 ```
 
-The same customer may therefore appear in multiple communication logs within the same retry family.
+The reconciliation therefore explains the entire **30 → 22** difference.
 
-### Example
+---
+
+# Audit Trail & Investigation
+
+The final query was not written by assuming that `22` was simply a filtered count. The dataset was investigated step by step to identify where the mismatch originated.
+
+### Investigation 1: Naive Count
+
+The first check was simply:
+
+```sql
+SELECT COUNT(*)
+FROM communication_log;
+```
+
+Result:
+
+```text
+30
+```
+
+This confirmed the raw starting point but did not explain Finance's `22`.
+
+---
+
+### Investigation 2: Campaign Eligibility
+
+The next investigation joined communication logs with campaign metadata and checked campaign lifecycle states.
+
+This revealed that some communication records were associated with campaigns that were **not Finance-eligible**, including campaigns still awaiting approval.
+
+The important finding was:
+
+```text
+Communication log exists
+        ↓
+Campaign is not Finance-eligible
+        ↓
+Log must not contribute to target_base
+```
+
+This reduced the working population from:
+
+```text
+30 → 26
+```
+
+---
+
+### Investigation 3: Delivery Status
+
+The remaining records were checked against delivery status.
+
+Only:
+
+```text
+delivery_status = 900
+```
+
+qualifies as a successful delivery.
+
+This produced:
+
+```text
+26 → 22
+```
+
+At this point the Finance count was already reached.
+
+---
+
+### Investigation 4: Retry Campaigns
+
+The remaining records were then investigated for duplicate customers across retry campaigns.
+
+A retry campaign is connected to its original campaign through:
+
+```text
+parent_id
+```
+
+Example:
+
+```text
+Original Campaign
+       │
+       ├── Retry 1
+       │      │
+       │      └── Retry 2
+       │
+       └── Retry 3
+```
+
+A customer appearing in multiple campaigns within this family should contribute **once**, not once per communication event.
+
+For example:
 
 ```text
 Customer 101
-   │
-   ├── Original campaign → Delivered
-   ├── Retry campaign 1  → Delivered
-   └── Retry campaign 2  → Delivered
+   ├── Original → Delivered
+   ├── Retry 1  → Delivered
+   └── Retry 2  → Delivered
 ```
 
-A naive event count would produce:
+Naive event count:
 
 ```text
-3 communications
+3
 ```
 
-But Finance should count:
+Finance count:
 
 ```text
-1 customer
+1
 ```
 
-Therefore, retry families use:
+Therefore retry families use:
 
 ```sql
 COUNT(DISTINCT customer_id)
 ```
 
-while standalone campaigns preserve repeated events using:
+---
+
+### Investigation 5: Why Not `DISTINCT` Everywhere?
+
+An early/simple approach would be to apply:
 
 ```sql
-COUNT(log_id)
+COUNT(DISTINCT customer_id)
 ```
+
+to the entire dataset.
+
+That would be incorrect.
+
+Standalone campaigns can legitimately contain multiple communication events for the same customer. Those events should remain separate.
+
+Therefore the final logic is:
+
+```text
+Retry family
+    → COUNT(DISTINCT customer_id)
+
+Standalone campaign
+    → COUNT(log_id)
+```
+
+This distinction is the key business rule behind the reconciliation.
 
 ---
 
-## 🧠 Reconciliation Logic
+# Business Rules
 
-The final query performs the reconciliation in several stages.
+The final reconciliation applies the following rules:
 
-### 1. Select eligible campaigns
+### 1. Merchant
 
-First, campaigns are filtered by merchant, campaign name, creation status, and processing status.
-
-```sql
-eligible_campaigns AS (
-    SELECT c.id, c.parent_id, c.name
-    FROM campaign AS c
-    WHERE c.merchant_id = 501
-      AND c.name LIKE '%Diwali%'
-      AND c.creation_status IN (
-          'approved',
-          'aborted',
-          'resumed',
-          'stopped'
-      )
-      AND c.processing_status = 'processed'
-)
+```text
+merchant_id = 501
 ```
 
-### 2. Resolve retry families
+### 2. Reporting Period
 
-A recursive CTE walks through the parent-child campaign relationships and maps every retry campaign back to its root campaign.
-
-```sql
-campaign_ancestors (campaign_id, root_id) AS (
-    SELECT id, id
-    FROM eligible_campaigns
-    WHERE parent_id IS NULL
-
-    UNION ALL
-
-    SELECT child.id, parent.root_id
-    FROM eligible_campaigns AS child
-    JOIN campaign_ancestors AS parent
-      ON child.parent_id = parent.campaign_id
-)
+```text
+2026-10-01 ≤ sent_time < 2026-11-01
 ```
 
-This allows the query to treat:
+### 3. Campaign
+
+```sql
+name LIKE '%Diwali%'
+```
+
+### 4. Campaign Eligibility
+
+```sql
+creation_status IN (
+    'approved',
+    'aborted',
+    'resumed',
+    'stopped'
+)
+AND processing_status = 'processed'
+```
+
+### 5. Communication Type
+
+```text
+communication_type = 2
+```
+
+### 6. Successful Delivery
+
+```text
+delivery_status = 900
+```
+
+### 7. Retry Deduplication
+
+Customers are counted once within the same retry family.
+
+### 8. Standalone Campaigns
+
+Repeated qualifying events are preserved at the event level.
+
+---
+
+# Solution Approach
+
+The reconciliation is implemented as a sequence of SQL CTEs:
+
+```text
+Raw CSV
+   ↓
+SQLite
+   ↓
+Eligible Campaigns
+   ↓
+Retry Family Resolution
+   ↓
+Qualifying Deliveries
+   ↓
+Retry / Standalone Classification
+   ↓
+Conditional Counting
+   ↓
+target_base = 22
+```
+
+### Recursive CTE
+
+A recursive CTE resolves parent-child campaign relationships:
+
+```sql
+WITH RECURSIVE campaign_ancestors AS (...)
+```
+
+This allows:
 
 ```text
 Original → Retry → Retry → Retry
 ```
 
-as a single campaign family.
+to be treated as one campaign family.
 
-### 3. Filter qualifying deliveries
+### Conditional Counting
 
-Only communication logs satisfying the reporting rules are retained:
-
-```sql
-communication_type = 2
-delivery_status = 900
-merchant_id = 501
-sent_time within October 2026
-```
-
-### 4. Identify retry families
-
-The query determines whether each campaign root has retry descendants.
-
-```sql
-EXISTS (
-    SELECT 1
-    FROM eligible_campaigns AS child
-    WHERE child.parent_id = root_id
-)
-```
-
-### 5. Calculate the contribution
-
-The final aggregation applies different counting rules:
+The final aggregation applies different rules depending on campaign structure:
 
 ```sql
 CASE
@@ -257,21 +311,22 @@ CASE
 END
 ```
 
-This gives the correct Finance-reportable contribution for each campaign family.
+This prevents both:
+
+* overcounting retry customers
+* undercounting legitimate standalone events
 
 ---
 
-## 🗃️ Project Structure
+# Project Structure
 
 ```text
 comm-log-target-base-reconciliation/
 │
 ├── data/
-│   ├── raw/
-│   │   ├── campaign.csv
-│   │   └── communication_log.csv
-│   │
-│   └── comm_log.db
+│   └── raw/
+│       ├── campaign.csv
+│       └── communication_log.csv
 │
 ├── sql/
 │   ├── 01_schema_init.sql
@@ -285,384 +340,170 @@ comm-log-target-base-reconciliation/
 └── README.md
 ```
 
-### File Overview
+| File                          | Purpose                              |
+| ----------------------------- | ------------------------------------ |
+| `campaign.csv`                | Campaign source data                 |
+| `communication_log.csv`       | Communication source data            |
+| `01_schema_init.sql`          | Database schema                      |
+| `02_investigation.sql`        | Investigation and diagnostic queries |
+| `03_final_reconciliation.sql` | Final reconciliation logic           |
+| `ingest_csv.py`               | CSV → SQLite ingestion               |
+| `architecture.md`             | Visual solution architecture         |
+| `README.md`                   | Project documentation                |
 
-| File                              | Purpose                                         |
-| --------------------------------- | ----------------------------------------------- |
-| `data/raw/campaign.csv`           | Source campaign data                            |
-| `data/raw/communication_log.csv`  | Source communication-log data                   |
-| `data/comm_log.db`                | Generated local SQLite database (not committed)  |
-| `sql/01_schema_init.sql`          | SQLite schema and CSV import alternative        |
-| `sql/02_investigation.sql`        | Diagnostic and investigation queries            |
-| `sql/03_final_reconciliation.sql` | Production-style recursive reconciliation query |
-| `src/ingest_csv.py`               | Standard-library CSV → SQLite ingestion script  |
-| `architecture.md`                 | Architecture and execution flow                 |
-| `README.md`                       | Project documentation                           |
-
-Each run recreates `data/comm_log.db` from the CSV inputs, so the generated database can be deleted and rebuilt at any time. The database is ignored by Git; the raw data, schema, investigation queries, and reconciliation query are the reproducible project inputs.
+The generated SQLite database is intentionally not committed. It can be recreated from the source CSV files.
 
 ---
 
-## ⚙️ Tech Stack
-
-* **Python 3**
-* **SQLite**
-* **SQL**
-* **CSV**
-* Python Standard Library
-
-The ingestion script intentionally uses Python's standard library rather than requiring external packages.
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-
-Make sure the following are installed:
+# Tech Stack
 
 * Python 3
-* SQLite CLI *(optional if you only use the Python script)*
+* SQLite
+* SQL
+* CSV
+* Python Standard Library
 
-Verify Python:
-
-```powershell
-python --version
-```
-
-Verify SQLite:
-
-```powershell
-sqlite3 --version
-```
+No external Python packages are required.
 
 ---
 
-## ▶️ Run the Reconciliation
+# Run the Project
 
 From the project root:
 
-```powershell
+```bash
 python src\ingest_csv.py
 ```
 
 The script:
 
-1. Reads both CSV source files.
-2. Creates/populates the SQLite database.
-3. Loads the campaign and communication-log data.
-4. Runs the reconciliation.
+1. Reads the source CSV files.
+2. Creates the SQLite database.
+3. Loads the source data.
+4. Executes the reconciliation workflow.
 5. Prints the reconciliation bridge.
-6. Prints the final `target_base`.
+6. Outputs the final `target_base`.
 
-### Expected Result
+Expected result:
 
 ```text
-Step | Description              | Result | Reason
------+--------------------------+--------+------------------------------------
-0    | Naive count              | 30     | (starting point) raw logs
-1    | Merchant & Oct filter    | 30     | Scope to merchant 501 and Oct 2026
-2    | Diwali campaign filter   | 30     | Filter to '%Diwali%' campaigns
-3    | Processing status        | 26     | Exclude approval_awaiting campaigns
-4    | Delivery status (900)    | 22     | Exclude failed deliveries (!= 900)
-5    | Retry deduplication      | 22     | Retry once; keep standalone sends
-
-target_base = 22
+Raw logs                    30
+Eligible campaigns          26
+Successful deliveries       22
+Final target_base           22
 ```
 
-**No second command is required for the complete reconciliation.**
+The complete reconciliation can be run with a single command.
 
 ---
 
-## 🔎 Run SQL Queries Directly
+# Inspect the SQL
 
-If you want to inspect individual query outputs, run:
+For the investigation:
 
-### Investigation Queries
-
-```powershell
+```bash
 sqlite3 data\comm_log.db < sql\02_investigation.sql
 ```
 
-### Final Reconciliation
+For the final reconciliation:
 
-```powershell
+```bash
 sqlite3 data\comm_log.db < sql\03_final_reconciliation.sql
 ```
 
-These commands are optional because `ingest_csv.py` already performs the complete workflow.
-
 ---
 
-## 🏗️ Architecture
+# Why This Solution?
 
-The project follows a simple ingestion → database → reconciliation pipeline:
+The solution intentionally avoids treating the problem as a simple row-counting exercise.
+
+It separates:
 
 ```text
-          ┌──────────────────────┐
-          │   campaign.csv       │
-          └──────────┬───────────┘
-                     │
-                     │
-          ┌──────────▼───────────┐
-          │    ingest_csv.py     │
-          │                      │
-          │ CSV → SQLite         │
-          └──────────┬───────────┘
-                     │
-                     ▼
-          ┌──────────────────────┐
-          │    comm_log.db       │
-          │                      │
-          │ campaign             │
-          │ communication_log    │
-          └──────────┬───────────┘
-                     │
-                     ▼
-          ┌──────────────────────┐
-          │ Investigation SQL    │
-          │        +             │
-          │ Final Reconciliation │
-          └──────────┬───────────┘
-                     │
-                     ▼
-          ┌──────────────────────┐
-          │ Finance target_base  │
-          │                      │
-          │         22           │
-          └──────────────────────┘
-```
-
----
-
-## 🧩 Production Query
-
-The final reconciliation uses a **recursive CTE** to resolve parent-child retry relationships.
-
-```sql
-WITH RECURSIVE
-
--- Select campaigns eligible for Finance reporting.
-eligible_campaigns AS (
-    SELECT c.id, c.parent_id, c.name
-    FROM campaign AS c
-    WHERE c.merchant_id = 501
-      AND c.name LIKE '%Diwali%'
-      AND c.creation_status IN (
-          'approved',
-          'aborted',
-          'resumed',
-          'stopped'
-      )
-      AND c.processing_status = 'processed'
-),
-
--- Resolve every retry campaign to its root campaign.
-campaign_ancestors (campaign_id, root_id) AS (
-    SELECT id, id
-    FROM eligible_campaigns
-    WHERE parent_id IS NULL
-
-    UNION ALL
-
-    SELECT child.id, parent.root_id
-    FROM eligible_campaigns AS child
-    JOIN campaign_ancestors AS parent
-      ON child.parent_id = parent.campaign_id
-),
-
--- Keep delivered campaign logs within the reporting scope.
-scoped_deliveries AS (
-    SELECT
-        cl.id AS log_id,
-        cl.customer_id,
-        ca.root_id
-    FROM communication_log AS cl
-    JOIN campaign_ancestors AS ca
-      ON ca.campaign_id = cl.communication_id
-    WHERE cl.merchant_id = 501
-      AND cl.communication_type = 2
-      AND cl.delivery_status = 900
-      AND cl.sent_time >= '2026-10-01'
-      AND cl.sent_time < '2026-11-01'
-),
-
--- Mark roots that have retry descendants.
-family_shape AS (
-    SELECT
-        root_id,
-        EXISTS (
-            SELECT 1
-            FROM eligible_campaigns AS child
-            WHERE child.parent_id = root_id
-        ) AS is_retry_family
-    FROM campaign_ancestors
-    GROUP BY root_id
-),
-
--- Deduplicate retry customers while preserving
--- standalone campaign events.
-family_totals AS (
-    SELECT
-        d.root_id,
-        CASE
-            WHEN s.is_retry_family
-                THEN COUNT(DISTINCT d.customer_id)
-            ELSE COUNT(d.log_id)
-        END AS target_base_contribution
-    FROM scoped_deliveries AS d
-    JOIN family_shape AS s
-      ON s.root_id = d.root_id
-    GROUP BY
-        d.root_id,
-        s.is_retry_family
-)
-
-SELECT SUM(target_base_contribution) AS target_base
-FROM family_totals;
-```
-
----
-
-## 📊 Observations & Findings
-
-### Retry Campaigns
-
-Retry campaigns form **parent-child chains**.
-
-A customer may therefore appear in multiple campaign logs belonging to the same retry family.
-
-These customers must be counted only once across the complete family.
-
-### Failed Deliveries
-
-Communication logs with a delivery status other than `900` remain present in the operational database but do not contribute to the Finance target base.
-
-```text
-delivery_status != 900
+Operational events
         ↓
-Non-qualifying delivery
+Business eligibility
         ↓
-Excluded from target_base
+Delivery qualification
+        ↓
+Campaign hierarchy
+        ↓
+Customer-level retry deduplication
+        ↓
+Finance reporting
 ```
 
-### Incomplete Campaign Lifecycles
+This makes the reconciliation:
 
-Draft or approval-pending campaigns can contain rows that appear delivered.
+* **Reproducible**
+* **Auditable**
+* **Scalable**
+* **Maintainable**
+* **Easy to validate**
 
-However, those campaigns are not yet eligible for Finance reporting and are therefore excluded.
-
-```text
-Campaign not Finance-eligible
-        ↓
-Ignore associated logs
-```
-
-### Standalone Campaigns
-
-Standalone campaigns do not have retry descendants.
-
-Repeated qualifying events in these campaigns are intentionally preserved rather than deduplicated by customer.
+Most importantly, every reduction from **30 → 22** can be traced back to an explicit business rule.
 
 ---
 
-## 📈 Reconciliation Summary
+# Key Technical Concepts
 
-```text
-30 Raw Logs
-     │
-     ▼
-Merchant 501 + October 2026
-     │
-     ▼
-30
-     │
-     ▼
-Diwali Campaigns
-     │
-     ▼
-30
-     │
-     ▼
-Eligible Processing Status
-     │
-     ▼
-26
-     │
-     ▼
-Delivery Status = 900
-     │
-     ▼
-22
-     │
-     ▼
-Retry Deduplication
-     │
-     ▼
-22
-     │
-     ▼
-🎯 Finance target_base = 22
-```
+This project demonstrates:
 
----
-
-## 💡 Key Technical Concepts Demonstrated
-
-This project demonstrates practical SQL/data-engineering concepts including:
-
-* SQLite database creation
-* CSV ingestion
-* SQL filtering
-* CTEs
-* **Recursive CTEs**
+* SQLite data ingestion
+* SQL CTEs
+* Recursive CTEs
 * Parent-child hierarchy traversal
 * Campaign-family resolution
-* `COUNT(DISTINCT ...)`
 * Conditional aggregation
-* Data reconciliation
+* `COUNT(DISTINCT ...)`
 * Business-rule implementation
-* Operational vs. Finance reporting logic
-* Reproducible data pipelines
+* Data reconciliation
+* Audit-trail thinking
+* Operational vs Finance reporting logic
 
 ---
 
-## 📝 Conclusion
+# Architecture
 
-The reconciliation demonstrates why a simple:
-
-```sql
-SELECT COUNT(*)
-```
-
-is not sufficient for determining the Finance `target_base`.
-
-The final value of **22** is obtained by applying the complete business logic:
+A detailed visual walkthrough of the solution is available in:
 
 ```text
-Raw Logs
-   ↓
-Merchant + Date Scope
-   ↓
-Diwali Campaign Scope
-   ↓
-Campaign Eligibility
-   ↓
-Processed Campaigns
-   ↓
-Successful Deliveries
-   ↓
-Retry-Family Deduplication
-   ↓
-Finance target_base
+architecture.md
 ```
 
-### Final Answer
+It shows the complete flow from:
 
-> **`target_base = 22`**
+```text
+CSV → Python ingestion → SQLite → SQL investigation
+→ Retry hierarchy → Reconciliation → Finance target_base
+```
 
 ---
 
-## 👤 Project Purpose
+# Final Result
 
-This project was built to demonstrate how raw operational communication data can be transformed into a **Finance-reportable metric using explicit business rules and reproducible SQL logic**.
+```text
+30 Raw Communication Logs
+             ↓
+     Campaign Eligibility
+             ↓
+             26
+             ↓
+    Successful Deliveries
+             ↓
+             22
+             ↓
+     Retry Deduplication
+             ↓
+     Finance target_base
+             ↓
+             22
+```
+
+> **Final Finance `target_base` = 22**
+
+---
+
+## Project Purpose
+
+This project demonstrates how raw operational communication data can be transformed into a **Finance-reportable metric using explicit business rules, SQL reconciliation, hierarchical retry handling, and a reproducible data pipeline.**
