@@ -125,3 +125,16 @@ communication-log rows, prints the six-step bridge in a compact table, and ends
 with `target_base = 22`. The bridge is cumulative: lifecycle eligibility reduces
 the count from 30 to 26, delivered-status filtering reduces it to 22, and retry
 deduplication preserves the final value of 22.
+
+## Project Files
+
+```text
+data/raw/campaign.csv
+data/raw/communication_log.csv
+src/__init__.py
+src/ingest_csv.py
+sql/finalresult.sql
+architecture.md
+reconciliation_bridge.pdf
+README.md
+```

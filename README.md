@@ -175,9 +175,11 @@ comm-log-target-base-reconciliation/
 │   └── finalresult.sql
 │
 ├── src/
+│   ├── __init__.py
 │   └── ingest_csv.py
 │
 ├── architecture.md
+├── reconciliation_bridge.pdf
 └── README.md
 ```
 
@@ -187,8 +189,10 @@ comm-log-target-base-reconciliation/
 | `data/raw/communication_log.csv`  | Source communication-log data                   |
 | `data/comm_log.db`                | Generated local SQLite database (not committed)  |
 | `sql/finalresult.sql`             | SQLite setup, diagnostics, and final reconciliation query |
+| `src/__init__.py`                 | Python package marker                           |
 | `src/ingest_csv.py`               | Standard-library CSV → SQLite ingestion script  |
 | `architecture.md`                 | Architecture and execution flow                 |
+| `reconciliation_bridge.pdf`       | Reconciliation reference document              |
 | `README.md`                       | Project documentation                           |
 
 Each run recreates `data/comm_log.db` from the CSV inputs, so the generated database can be deleted and rebuilt at any time. The database is ignored by Git; the raw data and `sql/finalresult.sql` are the reproducible project inputs.
