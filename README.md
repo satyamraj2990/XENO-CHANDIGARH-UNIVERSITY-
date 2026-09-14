@@ -172,9 +172,7 @@ comm-log-target-base-reconciliation/
 │       └── communication_log.csv
 │
 ├── sql/
-│   ├── 01_schema_init.sql
-│   ├── 02_investigation.sql
-│   └── 03_final_reconciliation.sql
+│   └── finalresult.sql
 │
 ├── src/
 │   └── ingest_csv.py
@@ -183,15 +181,17 @@ comm-log-target-base-reconciliation/
 └── README.md
 ```
 
-| File                          | Purpose                              |
-| ----------------------------- | ------------------------------------ |
-| `01_schema_init.sql`          | SQLite schema                        |
-| `02_investigation.sql`        | Investigation and diagnostic queries |
-| `03_final_reconciliation.sql` | Final reconciliation logic           |
-| `ingest_csv.py`               | CSV → SQLite ingestion               |
-| `architecture.md`             | Architecture documentation           |
+| File                              | Purpose                                         |
+| --------------------------------- | ----------------------------------------------- |
+| `data/raw/campaign.csv`           | Source campaign data                            |
+| `data/raw/communication_log.csv`  | Source communication-log data                   |
+| `data/comm_log.db`                | Generated local SQLite database (not committed)  |
+| `sql/finalresult.sql`             | SQLite setup, diagnostics, and final reconciliation query |
+| `src/ingest_csv.py`               | Standard-library CSV → SQLite ingestion script  |
+| `architecture.md`                 | Architecture and execution flow                 |
+| `README.md`                       | Project documentation                           |
 
-`comm_log.db` is generated locally and ignored by Git.
+Each run recreates `data/comm_log.db` from the CSV inputs, so the generated database can be deleted and rebuilt at any time. The database is ignored by Git; the raw data and `sql/finalresult.sql` are the reproducible project inputs.
 
 ---
 
@@ -220,11 +220,13 @@ Final target_base      : 22
 
 Optional direct SQL execution:
 
-```bash
-sqlite3 data\comm_log.db < sql\02_investigation.sql
-sqlite3 data\comm_log.db < sql\03_final_reconciliation.sql
+```powershell
+sqlite3 < sql\finalresult.sql
 ```
 
+The SQL script expects to be run from the project root and imports the CSV files using
+relative paths. This command is optional because `ingest_csv.py` already performs the
+complete workflow and prints the final `target_base`.
 ---
 
 ## 🧩 Technical Concepts

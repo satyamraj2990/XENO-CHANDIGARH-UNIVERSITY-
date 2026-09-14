@@ -15,6 +15,7 @@ def data_path(filename: str) -> Path:
 DEFAULT_CAMPAIGN_CSV = data_path("campaign.csv")
 DEFAULT_LOG_CSV = data_path("communication_log.csv")
 DEFAULT_DATABASE = PROJECT_ROOT / "data" / "comm_log.db"
+FINAL_SQL = PROJECT_ROOT / "sql" / "finalresult.sql"
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
@@ -175,9 +176,8 @@ def print_reconciliation_bridge(database: Path) -> None:
         for step, description, query, reason in queries:
             result = connection.execute(query).fetchone()[0]
             rows.append((step, description, str(result), reason))
-        final_query = (PROJECT_ROOT / "sql" / "03_final_reconciliation.sql").read_text(
-            encoding="utf-8"
-        )
+        sql_script = FINAL_SQL.read_text(encoding="utf-8")
+        final_query = sql_script[sql_script.index("WITH RECURSIVE") :]
         final_result = connection.execute(final_query).fetchone()[0]
         rows.append(
             (
